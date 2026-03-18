@@ -22,7 +22,7 @@ mkdir -p ~/headscale/config
 touch ~/headscale/config/db.sqlite
 
 # 3. 下载官方示例配置文件
-wget [https://raw.githubusercontent.com/juanfont/headscale/main/config-example.yaml](https://raw.githubusercontent.com/juanfont/headscale/main/config-example.yaml) -O ~/headscale/config/config.yaml
+wget https://raw.githubusercontent.com/juanfont/headscale/main/config-example.yaml -O ./headscale/config/config.yaml
 ```
 
 ## 2.2 修改关键配置 (`config.yaml`)
@@ -108,35 +108,41 @@ tailscale up --login-server=[http://服务端IP:8080](http://服务端IP:8080) -
 
 ## 5. 核心排障记录 (Troubleshooting)
 
-在部署过程中，最棘手的问题是**客户端执行连接命令后“无响应 / 死等超时”**。以下是针对此现象的完整排查链路：
+## 1：多网卡路由黑洞 (命令卡死无响应)
 
-## 症状一：Tailscale 后台服务卡死
+- **现象**：浏览器能访问控制端，但 `tailscale up` 命令卡死。日志报错 `connectex: A connection attempt failed`。
+- **原因**：Windows 物理网卡与虚拟机网卡共存时，Tailscale 底层引擎误将物理网卡（如 WLAN）作为默认路由发包，导致去往虚拟机的包被外网路由器丢弃。
+- **解决**：
+  - **临时法**：暂时断开物理 Wi-Fi，强迫系统走虚拟网卡，连接成功后再恢复。
+  - **彻底法**：在 VMware 中配置 NAT 端口转发（将 `127.0.0.1:8080` 转发到虚拟机 `8080`），客户端使用 `http://127.0.0.1:8080` 登录。
 
-- **现象**：命令无响应，没有日志生成。
-- **原因**：Windows 端的核心服务 `tailscaled.exe` 陷入死锁或状态冲突。
-- **解决**：打开任务管理器，强制结束所有 `tailscale.exe` 和 `tailscaled.exe` 进程，然后重启服务。
+## 2：手动执行 `tailscaled.exe` 导致 NoState 秒断
 
-## 症状二：多网卡路由黑洞（本次实战中的“真凶”）
+- **现象**：使用命令行强行执行 `& "...\tailscaled.exe"`，提示 `unexpected state: NoState`，且瞬间断开连接。
+- **原因**：Tailscale 是前后端分离架构，`tailscaled.exe` 必须作为 Windows **系统最高权限服务 (System Service)** 在后台静默运行。手动在前台强行拉起，会导致权限错位并与原有后台服务发生管道抢占 (Access is denied)。
+- **解决**：永远不要手动运行引擎程序。如遇卡死，去任务管理器结束所有 Tailscale 进程，并通过 Windows 服务管理器重启 `Tailscale` 服务。
 
-- **现象**：浏览器能访问 `http://服务端IP:8080/windows`，但 Tailscale 命令依然无响应。强制前台运行引擎（`& "C:\Program Files\Tailscale\tailscaled.exe"`）后，日志报错 `dial tcp 服务端IP:8080... connectex: A connection attempt failed`。
-- **原因**：Windows 存在多张网卡（物理 Wi-Fi、VMnet1、VMnet8）。Tailscale 底层的 Go 引擎强行绑定了系统的“默认路由网卡”（即物理 Wi-Fi）去发包，导致发往虚拟机 `137` 网段的数据包被路由器直接丢弃，形成路由黑洞。
-- **解决（断网大法）**：
-  1. 暂时禁用 Windows 宿主机的物理 Wi-Fi / 拔掉网线。
-  2. 此时系统默认路由只剩下 VMnet 虚拟网卡。
-  3. 重新执行 `tailscale up ...` 命令，瞬间秒连。
-  4. 连上后，重新开启 Wi-Fi，VPN 隧道自动维持，不影响后续使用。
+## 3：手机热点导致 `no-derp-connection` 报错
+
+- **现象**：日志疯狂报错连不上官方的 `Hong Kong` 中继服务器 (DERP)，且后台显示节点 Offline。
+- **原因**：国内三大运营商在蜂窝网络（手机热点）下，由于严格的 NAT 类型和防火墙策略，经常会屏蔽或干扰 Tailscale 官方的海外中继节点。
+- **解决**：
+  - 若双方在**同一局域网/同一热点**下，该报错可无视（局域网直连已生效）。
+  - 若在异地且必须使用，需更换为宽带 Wi-Fi，或在云服务器上自建私有 DERP 中继节点。
 
 ------
 
 ## 6. 日常运维必备命令
 
-所有服务端命令需在 Ubuntu 终端下执行：
-
-| **功能**                 | **命令**                                                   |
-| ------------------------ | ---------------------------------------------------------- |
-| **查看在线节点 (设备)**  | `docker exec headscale headscale nodes list`               |
-| **查看当前用户**         | `docker exec headscale headscale users list`               |
-| **查看有效密钥**         | `docker exec headscale headscale preauthkeys list -u 1`    |
-| **查看实时运行日志**     | `docker logs -f headscale`                                 |
-| **删除/踢出节点**        | `docker exec headscale headscale nodes delete -i <节点ID>` |
-| **查看客户端状态 (Win)** | 在 Windows PowerShell 执行：`tailscale status`             |
+| **功能**           | **命令**                                                     |
+| ------------------ | ------------------------------------------------------------ |
+| **创建新用户**     | `docker exec headscale headscale users create <用户名>`      |
+| **生成接入密钥**   | `docker exec headscale headscale preauthkeys create -e 24h -u <用户ID> --reusable` |
+| **查看当前用户**   | `docker exec headscale headscale users list`                 |
+| **查看有效密钥**   | `docker exec headscale headscale preauthkeys list -u <用户ID>` |
+| **查看在线节点**   | `docker exec headscale headscale nodes list`                 |
+| **踢出离线节点**   | `docker exec headscale headscale nodes delete -i <节点ID>`   |
+| **查看宣告路由**   | `docker exec headscale headscale routes list`                |
+| **审批/启用路由**  | `docker exec headscale headscale routes enable -r <路由ID>`  |
+| **查看实时日志**   | `docker logs -f headscale`                                   |
+| **查看客户端状态** | 在 Windows/Mac 客户端终端执行：`tailscale status`            |
