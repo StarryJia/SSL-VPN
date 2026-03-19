@@ -241,3 +241,73 @@ docker run -d \
    - **Server URL**: `http://<服务端IP>:9090` *(⚠️ 注意：这里的端口是 Caddy 桥梁的 9090，且末尾切勿带有斜杠 `/`)*
    - **API Key**: 填入在 8.1 步骤中生成的长串密钥。
 4. 点击 **Save**，页面即可瞬间获取后端的 Nodes 和 Users 数据，可视化管理配置完成！
+
+## 8. DERP (中继服务器) 配置与私有化部署
+
+**什么是 DERP？** 当由于严格的网络防火墙（如手机热点、对称 NAT）导致两台设备无法直接 P2P “打洞”相连时，流量会通过 DERP 中继服务器进行 HTTPS 伪装转发。Headscale 默认会去拉取 Tailscale 官方提供的全球 DERP 节点列表。
+
+## 8.1 纯离线/暗网模式 (禁用官方 DERP)
+
+**适用场景**：物理机完全没有外网连接（如保密机房、纯局域网环境）。如果不禁用官方列表，Headscale 启动时会因为连不上官方服务器而触发 `context deadline exceeded` 报错并闪退。
+
+**操作步骤**：
+
+1. 编辑配置文件：
+
+   Bash
+
+   ```
+   nano ~/headscale/config/config.yaml
+   ```
+
+2. 找到 `derp:` 配置块下的 `urls:`，将其设为空列表（或者用 `#` 注释掉官方网址）：
+
+   YAML
+
+   ```
+   derp:
+     server:
+       # ...省略自带 server 配置...
+     urls: []  # 设为空列表，强制不联网拉取官方节点
+   ```
+
+3. 重启服务生效：`docker restart headscale`
+
+## 8.2 开启 Headscale 内置的本地 DERP 服务
+
+**适用场景**：您的 Headscale 部署在具有公网 IP 的云服务器上，或者您确信所有设备都能连通该 Headscale 所在的局域网 IP。您可以开启它自带的 DERP 服务，实现完全私有化的流量中转。
+
+**操作步骤**：
+
+1. 编辑配置文件：
+
+   Bash
+
+   ```
+   nano ~/headscale/config/config.yaml
+   ```
+
+2. 找到 `derp: server:` 节点，按如下修改开启内置中继：
+
+   YAML
+
+   ```
+   derp:
+     server:
+       # 开启内置 DERP 服务
+       enabled: true
+   
+       # 节点所在区域（仅作显示用）
+       region_id: 999
+       region_code: "local"
+       region_name: "My Local DERP"
+   
+       # STUN 服务监听端口 (UDP，用于辅助打洞，需要在宿主机/防火墙放行该端口)
+       stun_listen_addr: "0.0.0.0:3478"
+   ```
+
+3. **防火墙放行**：如果开启了内置 DERP，必须在宿主机和网络防火墙上额外放行 **UDP 3478** 端口。
+
+4. 重启服务生效：`docker restart headscale`
+
+> **⚠️ 进阶架构提示**： 如果 Headscale 控制端没有公网 IP，但您又想在异地网络极差的情况下实现稳定中转，建议在阿里云/腾讯云等具有公网 IP 的服务器上，单独部署一个开源的 `derper` (Tailscale 自建中继程序)，并在 `config.yaml` 的 `paths:` 中引入该私有节点的配置文件。
