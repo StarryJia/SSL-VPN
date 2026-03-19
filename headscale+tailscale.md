@@ -139,10 +139,105 @@ tailscale up --login-server=[http://服务端IP:8080](http://服务端IP:8080) -
 | **创建新用户**     | `docker exec headscale headscale users create <用户名>`      |
 | **生成接入密钥**   | `docker exec headscale headscale preauthkeys create -e 24h -u <用户ID> --reusable` |
 | **查看当前用户**   | `docker exec headscale headscale users list`                 |
-| **查看有效密钥**   | `docker exec headscale headscale preauthkeys list -u <用户ID>` |
+| **查看有效密钥**   | `docker exec headscale headscale preauthkeys list`           |
+| **使密钥过期**     | `docker exec headscale headscale preauthkeys expire --id <密钥ID>` |
+| **删除密钥**       | `docker exec headscale headscale preauthkeys delete --id <密钥ID>` |
 | **查看在线节点**   | `docker exec headscale headscale nodes list`                 |
 | **踢出离线节点**   | `docker exec headscale headscale nodes delete -i <节点ID>`   |
 | **查看宣告路由**   | `docker exec headscale headscale routes list`                |
 | **审批/启用路由**  | `docker exec headscale headscale routes enable -r <路由ID>`  |
 | **查看实时日志**   | `docker logs -f headscale`                                   |
 | **查看客户端状态** | 在 Windows/Mac 客户端终端执行：`tailscale status`            |
+
+## 7. 部署 Web 可视化面板 (Headscale-UI) 及跨域修复
+
+为了彻底告别命令行，我们可以部署官方社区推荐的 `headscale-ui` 面板。由于 Headscale 后端自身存在对 `OPTIONS` 跨域预检请求处理缺陷（导致 401 报错），我们需要引入一个轻量级的 Caddy 容器作为反向代理桥梁。
+
+## 7.1 申请长期 API Key
+
+在服务端（运行 Headscale 的宿主机）终端生成一个给 Web 面板专用的控制钥匙：
+
+Bash
+
+```
+# 生成一个有效期为 365 天的 API Key（运行后请务必复制保存打印出的那串字符）
+docker exec headscale headscale apikeys create -e 365d
+```
+
+## 7.2 部署 Caddy 反向代理 (跨域修复桥梁)
+
+该步骤用于拦截浏览器的 `OPTIONS` 跨域预检请求并放行，同时将真实 API 请求转发给 Headscale 后端 (8080端口)。
+
+**1. 创建 Caddy 配置文件：**
+
+Bash
+
+```
+nano ~/headscale/Caddyfile
+```
+
+将以下内容完整粘贴进去（请将 `192.168.x.x` 替换为您服务端的真实局域网 IP）：
+
+Plaintext
+
+```
+:9090 {
+    # 1. 拦截浏览器的 OPTIONS 预检请求，直接返回 204 成功
+    @options {
+        method OPTIONS
+    }
+    handle @options {
+        header Access-Control-Allow-Origin "*"
+        header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        header Access-Control-Allow-Headers "*"
+        respond 204
+    }
+
+    # 2. 正常的请求转发给 Headscale 后端，并在返回时带上允许跨域的头
+    handle {
+        reverse_proxy 192.168.x.x:8080 {
+            header_down Access-Control-Allow-Origin "*"
+        }
+    }
+}
+```
+
+*(按 `Ctrl+O` 保存，回车确认，`Ctrl+X` 退出)*
+
+**2. 启动 Caddy 代理容器：**
+
+> **⚠️ 避坑提示**：若拉取官方镜像遇到 `connection refused` (被墙)，请在镜像名前添加国内加速源前缀，如 `docker.m.daocloud.io/library/caddy:latest`。
+
+Bash
+
+```
+docker run -d \
+  --name headscale-cors-fix \
+  --restart always \
+  -p 9090:9090 \
+  -v ~/headscale/Caddyfile:/etc/caddy/Caddyfile \
+  caddy:latest
+```
+
+## 7.3 部署 Headscale-UI 前端容器
+
+UI 容器内部服务运行在 `8080` 端口，为避免与宿主机上的 Headscale 冲突，我们将其映射到宿主机的 `8081` 端口：
+
+Bash
+
+```
+docker run -d \
+  --name headscale-ui \
+  --restart always \
+  -p 8081:8080 \
+  ghcr.io/gurucomputing/headscale-ui:latest
+```
+
+## 7.4 浏览器登录与绑定配置
+
+1. 打开浏览器，访问前端 UI 页面：`http://<服务端IP>:8081`。
+2. 点击页面中的 **Settings (设置)**。
+3. 填写以下两项关键信息：
+   - **Server URL**: `http://<服务端IP>:9090` *(⚠️ 注意：这里的端口是 Caddy 桥梁的 9090，且末尾切勿带有斜杠 `/`)*
+   - **API Key**: 填入在 8.1 步骤中生成的长串密钥。
+4. 点击 **Save**，页面即可瞬间获取后端的 Nodes 和 Users 数据，可视化管理配置完成！
