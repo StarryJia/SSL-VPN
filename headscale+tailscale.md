@@ -17,11 +17,9 @@
 # 1. 回到主目录并创建配置文件夹
 cd ~
 mkdir -p ~/headscale/config
+mkdir -p ~/headscale/data
 
-# 2. 创建空白的 SQLite 数据库文件
-touch ~/headscale/config/db.sqlite
-
-# 3. 下载官方示例配置文件
+# 2. 下载官方示例配置文件
 wget https://raw.githubusercontent.com/juanfont/headscale/main/config-example.yaml -O ./headscale/config/config.yaml
 ```
 
@@ -39,9 +37,6 @@ server_url: [http://服务端IP:8080](http://服务端IP:8080)
 
 # 监听所有网卡的 8080 端口
 listen_addr: 0.0.0.0:8080
-
-# 数据库路径（注意：这是容器内的路径，不要改成宿主机路径）
-db_path: /etc/headscale/db.sqlite
 ```
 
 ## 2.3 启动 Headscale 容器
@@ -55,6 +50,7 @@ docker run -d \
   --name headscale \
   --restart always \
   -v ~/headscale/config:/etc/headscale \
+  -v ~/headscale/data:/var/lib/headscale \
   -p 8080:8080 \
   ghcr.io/juanfont/headscale:latest \
   serve
