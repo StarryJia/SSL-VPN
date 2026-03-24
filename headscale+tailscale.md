@@ -42,12 +42,14 @@ listen_addr: 0.0.0.0:8080
 > **⚠️ 避坑提示**：务必加上 `--restart always` 参数。这相当于“免死金牌”，虚拟机重启后容器会自动拉起，防止数据未加载或丢失。
 
 ```bash
+#拉起容器（补齐 derp（端口换为3479） 映射）
 docker run -d \
   --name headscale \
   --restart always \
   -v ~/headscale/config:/etc/headscale \
   -v ~/headscale/data:/var/lib/headscale \
   -p 8080:8080 \
+  -p 3479:3479/udp \
   ghcr.io/juanfont/headscale:latest \
   serve
 ```
