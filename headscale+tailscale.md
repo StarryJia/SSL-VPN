@@ -23,7 +23,7 @@ mkdir -p ~/headscale/data
 wget https://raw.githubusercontent.com/juanfont/headscale/main/config-example.yaml -O ./headscale/config/config.yaml
 ```
 
-## 2.2 修改关键配置 (`config.yaml`)
+### 2.2 修改关键配置 (`config.yaml`)
 
 使用 `nano ~/headscale/config/config.yaml` 打开文件，找到并修改以下关键行：
 
@@ -37,7 +37,7 @@ server_url: [http://服务端IP:8080](http://服务端IP:8080)
 listen_addr: 0.0.0.0:8080
 ```
 
-## 2.3 启动 Headscale 容器
+### 2.3 启动 Headscale 容器
 
 > **⚠️ 避坑提示**：务必加上 `--restart always` 参数。这相当于“免死金牌”，虚拟机重启后容器会自动拉起，防止数据未加载或丢失。
 
@@ -58,7 +58,7 @@ docker run -d \
 
 ## 3. 用户与密钥管理
 
-## 3.1 创建用户 (User)
+### 3.1 创建用户 (User)
 
 Headscale 网络中的节点必须归属于某个用户。
 
@@ -66,7 +66,7 @@ Headscale 网络中的节点必须归属于某个用户。
 docker exec headscale headscale users create devteam
 ```
 
-## 3.2 获取用户 ID 并生成接入密钥 (AuthKey)
+### 3.2 获取用户 ID 并生成接入密钥 (AuthKey)
 
 > **⚠️ 避坑提示**：Headscale 最新版本不支持在命令中直接使用用户名，必须先查询用户的**数字 ID**（如 `1`）。
 
@@ -86,7 +86,7 @@ docker exec headscale headscale preauthkeys create -e 24h -u 1 --reusable
 
 **什么是 DERP？** 当由于严格的网络防火墙（如手机热点、对称 NAT）导致两台设备无法直接 P2P “打洞”相连时，流量会通过 DERP 中继服务器进行 HTTPS 伪装转发。Headscale 默认会去拉取 Tailscale 官方提供的全球 DERP 节点列表。
 
-## 4.1 纯离线/暗网模式 (禁用官方 DERP)
+### 4.1 纯离线/暗网模式 (禁用官方 DERP)
 
 **适用场景**：物理机完全没有外网连接（如保密机房、纯局域网环境）。如果不禁用官方列表，Headscale 启动时会因为连不上官方服务器而触发 `context deadline exceeded` 报错并闪退。
 
@@ -109,7 +109,7 @@ docker exec headscale headscale preauthkeys create -e 24h -u 1 --reusable
 
 3. 重启服务生效：`docker restart headscale`
 
-## 4.2 开启 Headscale 内置的本地 DERP 服务
+### 4.2 开启 Headscale 内置的本地 DERP 服务
 
 **适用场景**：您的 Headscale 部署在具有公网 IP 的云服务器上，或者您确信所有设备都能连通该 Headscale 所在的局域网 IP。您可以开启它自带的 DERP 服务，实现完全私有化的流量中转。
 
@@ -143,6 +143,109 @@ docker exec headscale headscale preauthkeys create -e 24h -u 1 --reusable
 4. 重启服务生效：`docker restart headscale`
 
 > **⚠️ 进阶架构提示**： 如果 Headscale 控制端没有公网 IP，但您又想在异地网络极差的情况下实现稳定中转，建议在阿里云/腾讯云等具有公网 IP 的服务器上，单独部署一个开源的 `derper` (Tailscale 自建中继程序)，并在 `config.yaml` 的 `paths:` 中引入该私有节点的配置文件。
+
+### 4.3 DERP 自定义端口私有化部署
+
+当默认的 3478 端口发生冲突，或需要自定义中继节点配置时，需分离服务端的监听配置与客户端的路由下发配置。本节以 STUN 打洞端口修改为 `3479`、HTTPS 中继端口复用 `8081` 为例说明部署标准流程。
+
+#### 1. 创建 DERP 路由配置文件
+
+该文件用于定义客户端连接中继节点的规则。在宿主机配置目录中新建 `derp.yaml` 文件：
+
+```bash
+nano /root/headscale/config/derp.yaml
+```
+
+写入以下配置。注意：YAML 语法严格要求使用纯空格缩进，禁止使用 Tab 键。
+
+```yaml
+regions:
+  900:
+    regionid: 900
+    regioncode: myderp
+    regionname: My True 3479 DERP
+    nodes:
+      - name: 900a
+        regionid: 900
+        hostname: head.emolu.cn
+        derpport: 8081
+        stunport: 3479
+        stunonly: false
+```
+
+#### 2. 修改 Headscale 主配置文件
+
+打开 Headscale 主配置文件 `config.yaml`：
+
+```bash
+nano /root/headscale/config/config.yaml
+```
+
+定位至 `derp` 模块，修改并确认以下三个参数：
+
+1. `stun_listen_addr` 更改为目标端口 `0.0.0.0:3479`。
+2. `urls` 列表留空，以禁用官方默认节点。
+3. `paths` 列表中添加自定义路由文件在**容器内部**的绝对路径。
+
+修改后的标准结构如下：
+
+```YAML
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: "headscale"
+    region_name: "Headscale Embedded DERP"
+    stun_listen_addr: "0.0.0.0:3479"
+  urls: []
+  paths:
+    - /etc/headscale/derp.yaml
+```
+
+#### 3. 更新防火墙策略与重建容器
+
+服务端端口变更涉及物理网络的修改，需同步更新云服务器防火墙规则与 Docker 端口映射。
+
+1. **配置安全组规则**：在云服务商控制台，添加允许入方向 `UDP 3479` 端口的放行规则，授权对象设置为 `0.0.0.0/0`。
+2. **重建 Docker 容器**：删除旧容器，并使用绝对路径挂载及新的 UDP 端口映射重新启动：
+
+```bash
+docker rm -f headscale
+
+docker run -d \
+  --name headscale \
+  --restart always \
+  -v /root/headscale/config:/etc/headscale \
+  -v /root/headscale/data:/var/lib/headscale \
+  -p 8080:8080 \
+  -p 3479:3479/udp \
+  ghcr.io/juanfont/headscale:latest \
+  serve
+```
+
+#### 4. 客户端缓存清理与重连验证
+
+服务端修改完成后，必须强制清理客户端的本地路由缓存，否则客户端将因使用错误旧端口导致连接失败（表现为 `unknown`）。
+
+在 Windows 系统中，使用管理员权限运行命令提示符（CMD），依次执行以下命令：
+
+```powershell
+# 注销当前会话
+tailscale logout
+
+# 重启后台服务，清空内存路由状态
+net stop Tailscale
+net start Tailscale
+
+# 携带强制认证参数请求新的节点地图
+tailscale up --login-server=[https://head.emolu.cn:8081](https://head.emolu.cn:8081) --authkey=YOUR_API_KEY --force-reauth
+```
+
+连接建立后，执行网络状态检查：
+
+```powershell
+tailscale netcheck
+```
 
 ## 5. Windows 客户端接入
 
@@ -256,17 +359,17 @@ docker run -d \
    - **API Key**: 填入在 7.1 步骤中生成的长串密钥。
 4. 点击 **Save**，页面即可瞬间获取后端的 Nodes 和 Users 数据，可视化管理配置完成！
 
-## 7.5 云上部署headscale-ui 和 Caddy 反向代理
+## 8 云上部署headscale-ui 和 Caddy 反向代理
 
 本节将介绍如何通过 Caddy 反向代理，将 Headscale 后端大脑与 Headscale-UI 前端面板完美融合在**同一个域名和端口**下。此架构能彻底消除前后端分离带来的 CORS 跨域问题，并最大限度收敛公网暴露端口。
 
-### 7.5.1 架构概览
+### 8.1 架构概览
 
 * **公网入口 (Caddy)**：监听 `8081` 端口，负责 HTTPS 卸载与流量智能分发。
 * **后端大脑 (Headscale)**：监听内网 `8080` 端口，处理机器注册与核心 API。
 * **前端面板 (Headscale-UI)**：监听内网 `8082` 端口，提供纯静态的 Web 图形界面。
 
-### 7.5.2 拉取并部署 Headscale-UI 容器
+### 8.2 拉取并部署 Headscale-UI 容器
 
 确保您的 Headscale 服务已在 `8080` 端口正常运行后，使用 Docker 启动 UI 容器，并将其映射到宿主机的 `8082` 端口。这里绑定 `127.0.0.1` 是为了防止 UI 界面直接暴露在公网，强制所有流量必须经过 Caddy 洗礼：
 
@@ -278,7 +381,7 @@ docker run -d \
   ghcr.io/gurucomputing/headscale-ui:latest
 ```
 
-## 7.5.3 配置 Caddyfile (单端口路由分发)
+## 8.3 配置 Caddyfile (单端口路由分发)
 
 这是整套架构的灵魂所在。打开您的 `Caddyfile` 配置文件，写入以下内容。Caddy 将通过“路径识别（Path）”来决定流量去向：
 
@@ -320,7 +423,7 @@ sudo systemctl reload caddy
 sudo systemctl status caddy
 ```
 
-## 7.5.4 获取管理凭证并登录 Web 界面
+## 8.4 获取管理凭证并登录 Web 界面
 
 Headscale-UI 采用纯前端渲染，数据安全不落地，登录必须使用底层生成的 API Key 进行鉴权。
 
