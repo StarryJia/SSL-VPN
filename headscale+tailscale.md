@@ -173,11 +173,11 @@ tailscale up --login-server=[http://服务端IP:8080](http://服务端IP:8080) -
 | **查看实时日志**   | `docker logs -f headscale`                                   |
 | **查看客户端状态** | 在 Windows/Mac 客户端终端执行：`tailscale status`            |
 
-## 7. 部署 Web 可视化面板 (Headscale-UI) 及跨域修复
+## 7. 虚拟机部署 Web 可视化面板 (Headscale-UI) 及跨域修复
 
 为了彻底告别命令行，我们可以部署官方社区推荐的 `headscale-ui` 面板。由于 Headscale 后端自身存在对 `OPTIONS` 跨域预检请求处理缺陷（导致 401 报错），我们需要引入一个轻量级的 Caddy 容器作为反向代理桥梁。
 
-## 7.1 申请长期 API Key
+### 7.1 申请长期 API Key
 
 在服务端（运行 Headscale 的宿主机）终端生成一个给 Web 面板专用的控制钥匙：
 
@@ -186,7 +186,7 @@ tailscale up --login-server=[http://服务端IP:8080](http://服务端IP:8080) -
 docker exec headscale headscale apikeys create -e 365d
 ```
 
-## 7.2 部署 Caddy 反向代理 (跨域修复桥梁)
+### 7.2 虚拟机部署 Caddy 反向代理 (跨域修复桥梁)
 
 该步骤用于拦截浏览器的 `OPTIONS` 跨域预检请求并放行，同时将真实 API 请求转发给 Headscale 后端 (8080端口)。
 
@@ -235,7 +235,7 @@ docker run -d \
   caddy:latest
 ```
 
-## 7.3 部署 Headscale-UI 前端容器
+### 7.3 部署 Headscale-UI 前端容器
 
 UI 容器内部服务运行在 `8080` 端口，为避免与宿主机上的 Headscale 冲突，我们将其映射到宿主机的 `8081` 端口：
 
@@ -243,18 +243,108 @@ UI 容器内部服务运行在 `8080` 端口，为避免与宿主机上的 Heads
 docker run -d \
   --name headscale-ui \
   --restart always \
-  -p 8081:8080 \
+  -p 8082:8080 \
   ghcr.io/gurucomputing/headscale-ui:latest
 ```
 
-## 7.4 浏览器登录与绑定配置
+### 7.4 浏览器登录与绑定配置
 
 1. 打开浏览器，访问前端 UI 页面：`http://<服务端IP>:8081`。
 2. 点击页面中的 **Settings (设置)**。
 3. 填写以下两项关键信息：
    - **Server URL**: `http://<服务端IP>:9090` *(⚠️ 注意：这里的端口是 Caddy 桥梁的 9090，且末尾切勿带有斜杠 `/`)*
-   - **API Key**: 填入在 8.1 步骤中生成的长串密钥。
+   - **API Key**: 填入在 7.1 步骤中生成的长串密钥。
 4. 点击 **Save**，页面即可瞬间获取后端的 Nodes 和 Users 数据，可视化管理配置完成！
+
+## 7.5 云上部署headscale-ui 和 Caddy 反向代理
+
+本节将介绍如何通过 Caddy 反向代理，将 Headscale 后端大脑与 Headscale-UI 前端面板完美融合在**同一个域名和端口**下。此架构能彻底消除前后端分离带来的 CORS 跨域问题，并最大限度收敛公网暴露端口。
+
+### 7.5.1 架构概览
+
+* **公网入口 (Caddy)**：监听 `8081` 端口，负责 HTTPS 卸载与流量智能分发。
+* **后端大脑 (Headscale)**：监听内网 `8080` 端口，处理机器注册与核心 API。
+* **前端面板 (Headscale-UI)**：监听内网 `8082` 端口，提供纯静态的 Web 图形界面。
+
+### 7.5.2 拉取并部署 Headscale-UI 容器
+
+确保您的 Headscale 服务已在 `8080` 端口正常运行后，使用 Docker 启动 UI 容器，并将其映射到宿主机的 `8082` 端口。这里绑定 `127.0.0.1` 是为了防止 UI 界面直接暴露在公网，强制所有流量必须经过 Caddy 洗礼：
+
+```bash
+docker run -d \
+  --name headscale-ui \
+  --restart always \
+  -p 127.0.0.1:8082:80 \
+  ghcr.io/gurucomputing/headscale-ui:latest
+```
+
+## 7.5.3 配置 Caddyfile (单端口路由分发)
+
+这是整套架构的灵魂所在。打开您的 `Caddyfile` 配置文件，写入以下内容。Caddy 将通过“路径识别（Path）”来决定流量去向：
+
+```
+head.emolu.cn:8081 {
+    # 1. 自动 HTTPS 证书配置 (使用 Cloudflare DNS 验证)
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+
+    # 2. 贴心小魔法：访问根目录自动跳转到 UI 面板
+    handle_path / {
+        redir /web/
+    }
+
+    # 3. 前端 UI 通道
+    # 匹配规则：所有以 /web/ 开头的请求，一律发给 8082 的 UI 容器
+    handle /web/* {
+        reverse_proxy 127.0.0.1:8082
+    }
+
+    # 4. 后端大脑通道 (终极兜底)
+    # 匹配规则：除了 UI 网页外，剩下所有的请求（包括客户端打洞、设备注册、API 调用）
+    # 全部无条件交给 8080 端口的 Headscale 核心
+    handle {
+        reverse_proxy 127.0.0.1:8080
+    }
+}
+```
+
+配置完成后，重载 Caddy 服务使新规则生效：
+
+```Bash
+# 如果 Caddy 是通过 Docker 运行：
+docker restart caddy
+
+# 如果 Caddy 是宿主机直装：
+sudo systemctl reload caddy
+sudo systemctl status caddy
+```
+
+## 7.5.4 获取管理凭证并登录 Web 界面
+
+Headscale-UI 采用纯前端渲染，数据安全不落地，登录必须使用底层生成的 API Key 进行鉴权。
+
+1. **生成 API Key**： 在云主机终端执行以下命令，生成一串专属密钥：
+
+   ```bash
+   # 如果 Headscale 是容器运行，请使用以下命令：
+   docker exec -it headscale headscale apikeys create
+   
+   # 如果是宿主机直装，直接执行：
+   headscale apikeys create
+   ```
+
+   *注意：请务必复制这串极长的随机字符串，它仅在生成时显示一次。*
+
+2. **登录面板并绑定**：
+
+   - 打开浏览器，访问：`https://head.emolu.cn:8081/web/`
+   - 在弹出的 Settings (设置) 页面中进行如下配置：
+     - **Headscale URL**: 填入 `https://head.emolu.cn:8081` *(切记：这里是主网关 API 地址，结尾不要带 /web 也不要填错端口)*
+     - **Headscale API Key**: 粘贴刚才生成的密钥。
+   - 点击 **Save (保存)**。
+
+配置无误后，您将成功进入主控制台并看到 Devices (设备列表)，此时即可在纯图形化界面中高效管理您的私有虚拟局域网。
 
 ## 核心排障记录 (Troubleshooting)
 
