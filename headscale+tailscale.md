@@ -623,7 +623,7 @@ auth.emolu.cn:8081 {
 
 ## 10. 身份联邦中枢：Casdoor 与飞书 SSO 深度集成实战
 
-### 10.1 第一原理：双重握手与租户隔离架构
+### 10.1 双重握手与租户隔离架构
 
 将非标的飞书 OAuth 接入严格的 Headscale OIDC 引擎，Casdoor 在此扮演了“协议翻译官”与“权限防火墙”的双重角色。整个数据链路被严格切割为两次独立握手，且受到底层租户沙盒的物理隔离：
 
@@ -718,3 +718,22 @@ auth.emolu.cn:8081 {
 | **向 built-in 组织添加用户被禁用** | **绝对**       | **越权拦截触发**。Casdoor 的应用（Application）错误地挂载在了 `built-in` 组织下，请立刻将其移动到无特权的 `vpn-users` 组织。 |
 | **飞书提示：你没有使用权限**       | **极高**       | **跨租户或可用域阻断**。发起请求的个人账号不在该应用的飞书白名单内。需将该用户拉入飞书团队，并在开放平台后台发布新版本扩大“可用范围”。 |
 | **Headscale 容器无限重启**         | **高**         | **OIDC 字段废弃**。`config.yaml` 中包含旧版本语法（如 `strip_email_domain: true`），或 `issuer` 末尾多写了 `/`。需检查日志排除 FATAL 报错。 |
+
+### 10.8 tailscale客户端跳转配置
+
+该配置可使tailscale自动跳转到单点登录界面。
+
+```powershell
+# 1. 物理级屠戮：强制杀死前端托盘进程 (解决缓存污染的绝对核心)
+Get-Process tailscale-ipn -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 2. 停止底层路由服务
+Stop-Service Tailscale -Force
+
+# 3. 确保注册表劫持处于绝对正确状态 (覆盖写入)
+New-ItemProperty -Path 'HKLM:\SOFTWARE\Tailscale IPN' -Name 'LoginURL' -PropertyType String -Value 'https://head.emolu.cn:8081' -Force
+
+# 4. 唤醒系统底层服务
+Start-Service Tailscale
+```
+
